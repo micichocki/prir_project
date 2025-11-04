@@ -2,24 +2,24 @@
 #include <fstream>
 #include <string>
 #include <map>
+#include <vector>
 #include <regex>
 #include <set>
 #include <filesystem>
+#include <algorithm>
 
-//   Usage: g++ -fopenmp -std=c++17 -o log_analyzer_openmp log_analyzer_openmp.cpp
-//   ./log_analyzer_openmp log_dir
+// Usage:  g++ -fopenmp -std=c++17 -o log_analyzer_openmp log_analyzer_openmp.cpp
+//        ./log_analyzer_openmp <log_directory> [phrase1 phrase2 ...]
+
 namespace fs = std::filesystem;
 
 constexpr int NUM_THREADS = 4;
-constexpr const char ERROR_STR[] = "ERROR";
-constexpr const char WARNING_STR[] = "WARNING";
-constexpr const char INFO_STR[] = "INFO";
+const std::vector<std::string> DEFAULT_PHRASES = {"ERROR", "WARNING", "INFO"};
 
 bool analyze_events_per_hour(
     const char* filename,
-    std::map<std::string,int>& errors_per_hour,
-    std::map<std::string,int>& warnings_per_hour,
-    std::map<std::string,int>& infos_per_hour)
+    const std::vector<std::string>& phrases,
+    std::map<std::string, std::map<std::string,int>>& per_hour_counts)
 {
     std::ifstream in(filename);
     if (!in) return false;
@@ -33,55 +33,72 @@ bool analyze_events_per_hour(
         if (std::regex_search(line, m, ts_re) && m.size() > 1) {
             hour = m[1].str();
         }
-        if (line.find(ERROR_STR) != std::string::npos) ++errors_per_hour[hour];
-        if (line.find(WARNING_STR) != std::string::npos) ++warnings_per_hour[hour];
-        if (line.find(INFO_STR) != std::string::npos) ++infos_per_hour[hour];
+        for (const auto& ph : phrases) {
+            if (line.find(ph) != std::string::npos) ++per_hour_counts[ph][hour];
+        }
     }
     return true;
 }
 
-bool analyze_file(const char* filename, int& error_count, int& warning_count, int& info_count) {
+bool collect_matching_lines(const char* filename, const std::vector<std::string>& phrases, std::map<std::string, std::vector<std::string>>& results) {
     std::ifstream in(filename);
     if (!in) return false;
 
     std::string line;
-    error_count = warning_count = info_count = 0;
-
     while (std::getline(in, line)) {
-        if (line.find(ERROR_STR) != std::string::npos) ++error_count;
-        if (line.find(WARNING_STR) != std::string::npos) ++warning_count;
-        if (line.find(INFO_STR) != std::string::npos) ++info_count;
+        for (const auto& ph : phrases) {
+            if (line.find(ph) != std::string::npos) {
+                results[ph].push_back(line);
+            }
+        }
     }
     return true;
 }
 
-void display_errors_per_hour(
-    const std::map<std::string,int>& errors_per_hour,
-    const std::map<std::string,int>& warnings_per_hour,
-    const std::map<std::string,int>& infos_per_hour)
+bool analyze_file(const char* filename, const std::vector<std::string>& phrases, std::vector<int>& counts) {
+    std::ifstream in(filename);
+    if (!in) return false;
+
+    std::string line;
+    counts.assign(phrases.size(), 0);
+
+    while (std::getline(in, line)) {
+        for (size_t i = 0; i < phrases.size(); ++i) {
+            if (line.find(phrases[i]) != std::string::npos) ++counts[i];
+        }
+    }
+    return true;
+}
+
+void display_per_hour(const std::vector<std::string>& phrases, const std::map<std::string, std::map<std::string,int>>& per_hour_counts)
 {
     std::cout << "Per-hour counts:\n";
     std::set<std::string> hours;
-    for (const auto& kv : errors_per_hour) hours.insert(kv.first);
-    for (const auto& kv : warnings_per_hour) hours.insert(kv.first);
-    for (const auto& kv : infos_per_hour) hours.insert(kv.first);
+    for (const auto& ph : phrases) {
+        auto it = per_hour_counts.find(ph);
+        if (it == per_hour_counts.end()) continue;
+        for (const auto& kv : it->second) hours.insert(kv.first);
+    }
 
     for (const auto& hour : hours) {
-        int e = 0, w = 0, i = 0;
-        auto ite = errors_per_hour.find(hour);
-        if (ite != errors_per_hour.end()) e = ite->second;
-        auto itw = warnings_per_hour.find(hour);
-        if (itw != warnings_per_hour.end()) w = itw->second;
-        auto iti = infos_per_hour.find(hour);
-        if (iti != infos_per_hour.end()) i = iti->second;
-        std::cout << hour << " E:" << e << " W:" << w << " I:" << i << '\n';
+        std::cout << hour;
+        for (const auto& ph : phrases) {
+            int cnt = 0;
+            auto itp = per_hour_counts.find(ph);
+            if (itp != per_hour_counts.end()) {
+                auto ith = itp->second.find(hour);
+                if (ith != itp->second.end()) cnt = ith->second;
+            }
+            std::cout << " " << ph << ":" << cnt;
+        }
+        std::cout << '\n';
     }
 }
 
 int main(int argc, char** argv) {
 
     if (argc < 2) {
-        std::cerr << "Usage: " << argv[0] << " <dir>\n";
+        std::cerr << "Usage: " << argv[0] << " <dir> [phrase1 phrase2 ...]\n";
         return 1;
     }
 
@@ -91,45 +108,67 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    int total_error_count = 0;
-    int total_warning_count = 0;
-    int total_info_count = 0;
+    std::vector<std::string> phrases;
+    if (argc >= 3) {
+        for (int i = 2; i < argc; ++i) phrases.emplace_back(argv[i]);
+    } else {
+        phrases = DEFAULT_PHRASES;
+    }
 
-    std::map<std::string,int> errors_per_hour;
-    std::map<std::string,int> warnings_per_hour;
-    std::map<std::string,int> infos_per_hour;
+    std::vector<int> total_counts(phrases.size(), 0);
+    std::map<std::string, std::map<std::string,int>> per_hour_counts;
+    std::map<std::string, std::vector<std::string>> all_matches;
 
     for (const auto& entry : fs::directory_iterator(dir)) {
         if (!fs::is_regular_file(entry.path())) continue;
 
         std::string filepath = entry.path().string();
-        int error_count = 0;
-        int warning_count = 0;
-        int info_count = 0;
+        std::vector<int> counts;
 
-        if (!analyze_file(filepath.c_str(), error_count, warning_count, info_count)) {
+        if (!analyze_file(filepath.c_str(), phrases, counts)) {
             std::cerr << "Cannot open " << filepath << "\n";
             continue;
         }
 
-        total_error_count += error_count;
-        total_warning_count += warning_count;
-        total_info_count += info_count;
+        for (size_t i = 0; i < phrases.size(); ++i) total_counts[i] += counts[i];
 
-        if (!analyze_events_per_hour(filepath.c_str(), errors_per_hour, warnings_per_hour, infos_per_hour)) {
+        if (!analyze_events_per_hour(filepath.c_str(), phrases, per_hour_counts)) {
             std::cerr << "Cannot open " << filepath << "\n";
             continue;
+        }
+
+        std::map<std::string, std::vector<std::string>> file_matches;
+        if (!collect_matching_lines(filepath.c_str(), phrases, file_matches)) {
+            std::cerr << "Cannot open " << filepath << " for matching lines\n";
+        } else {
+            for (const auto& kv : file_matches) {
+                auto& vec = all_matches[kv.first];
+                vec.insert(vec.end(), kv.second.begin(), kv.second.end());
+            }
         }
     }
-    std::cout << "Total errors:\n";
-    std::cout << total_error_count << '\n';
-    std::cout << "Total warnings:\n";
-    std::cout << total_warning_count << '\n';
-    std::cout << "Total info:\n";
-    std::cout << total_info_count << '\n';
 
-    display_errors_per_hour(errors_per_hour, warnings_per_hour, infos_per_hour);
+    fs::path outpath = "output/matches.txt";
+    std::ofstream outfs(outpath);
+    if (!outfs) {
+        std::cerr << "Cannot write to " << outpath.string() << "\n";
+    } else {
+        for (const auto& ph : phrases) {
+            outfs << "=== " << ph << " ===\n";
+            auto it = all_matches.find(ph);
+            if (it != all_matches.end()) {
+                for (const auto& l : it->second) outfs << l << "\n";
+            }
+            outfs << "\n";
+        }
+    }
+
+    std::cout << "Total counts:\n";
+    for (size_t i = 0; i < phrases.size(); ++i) {
+        std::cout << phrases[i] << ": " << total_counts[i] << '\n';
+    }
+
+    display_per_hour(phrases, per_hour_counts);
 
     return 0;
-
 }
