@@ -4,5 +4,4 @@ project(prir_project)
 set(CMAKE_CXX_STANDARD 20)
 
 add_executable(prir_project main.cpp
-        log_analyzer_openmp_mmap.cpp
-        log_analyzer_mpi.cpp)
+        log_analyzer_openmp.cpp)

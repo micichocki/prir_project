@@ -4,9 +4,11 @@
 #include <map>
 #include <regex>
 #include <set>
+#include <filesystem>
 
-//   Usage: g++ -fopenmp -o log_analyzer_openmp log_analyzer_openmp.cpp
-//   ./log_analyzer_openmp test.log
+//   Usage: g++ -fopenmp -std=c++17 -o log_analyzer_openmp log_analyzer_openmp.cpp
+//   ./log_analyzer_openmp log_dir
+namespace fs = std::filesystem;
 
 constexpr int NUM_THREADS = 4;
 constexpr const char ERROR_STR[] = "ERROR";
@@ -79,36 +81,54 @@ void display_errors_per_hour(
 int main(int argc, char** argv) {
 
     if (argc < 2) {
-        std::cerr << "Usage: " << argv[0] << " <file>\n";
+        std::cerr << "Usage: " << argv[0] << " <dir>\n";
         return 1;
     }
 
-    const char* filename = argv[1];
-    int error_count = 0;
-    int warning_count = 0;
-    int info_count = 0;
-
-    if (!analyze_file(filename, error_count, warning_count, info_count)) {
-        std::cerr << "Cannot open " << filename << "\n";
+    fs::path dir = argv[1];
+    if (!fs::exists(dir) || !fs::is_directory(dir)) {
+        std::cerr << "Not a directory: " << argv[1] << "\n";
         return 1;
     }
 
-    std::cout << error_count << '\n';
-    std::cout << warning_count << '\n';
-    std::cout << info_count << '\n';
-
+    int total_error_count = 0;
+    int total_warning_count = 0;
+    int total_info_count = 0;
 
     std::map<std::string,int> errors_per_hour;
     std::map<std::string,int> warnings_per_hour;
     std::map<std::string,int> infos_per_hour;
 
-    if (!analyze_events_per_hour(filename, errors_per_hour, warnings_per_hour, infos_per_hour)) {
-        std::cerr << "Cannot open " << filename << "\n";
-        return 1;
+    for (const auto& entry : fs::directory_iterator(dir)) {
+        if (!fs::is_regular_file(entry.path())) continue;
+
+        std::string filepath = entry.path().string();
+        int error_count = 0;
+        int warning_count = 0;
+        int info_count = 0;
+
+        if (!analyze_file(filepath.c_str(), error_count, warning_count, info_count)) {
+            std::cerr << "Cannot open " << filepath << "\n";
+            continue;
+        }
+
+        total_error_count += error_count;
+        total_warning_count += warning_count;
+        total_info_count += info_count;
+
+        if (!analyze_events_per_hour(filepath.c_str(), errors_per_hour, warnings_per_hour, infos_per_hour)) {
+            std::cerr << "Cannot open " << filepath << "\n";
+            continue;
+        }
     }
+    std::cout << "Total errors:\n";
+    std::cout << total_error_count << '\n';
+    std::cout << "Total warnings:\n";
+    std::cout << total_warning_count << '\n';
+    std::cout << "Total info:\n";
+    std::cout << total_info_count << '\n';
 
     display_errors_per_hour(errors_per_hour, warnings_per_hour, infos_per_hour);
-
 
     return 0;
 
