@@ -7,9 +7,11 @@
 #include <set>
 #include <filesystem>
 #include <algorithm>
+#include <omp.h>
 
-// Usage:  g++ -fopenmp -std=c++17 -o log_analyzer_openmp log_analyzer_openmp.cpp
-//        ./log_analyzer_openmp <log_directory> [phrase1 phrase2 ...]
+// Usage:
+//g++ -fopenmp -std=c++17 -O2 -o log_analyzer_openmp log_analyzer_openmp.cpp
+// ./log_analyzer_openmp logs_folder <dir> [phrase1 phrase2 ...]
 
 namespace fs = std::filesystem;
 
@@ -64,7 +66,8 @@ bool analyze_file(const char* filename, const std::vector<std::string>& phrases,
 
     while (std::getline(in, line)) {
         for (size_t i = 0; i < phrases.size(); ++i) {
-            if (line.find(phrases[i]) != std::string::npos) ++counts[i];
+            if (line.find(phrases[i]) != std::string::npos)
+                ++counts[i];
         }
     }
     return true;
@@ -115,39 +118,61 @@ int main(int argc, char** argv) {
         phrases = DEFAULT_PHRASES;
     }
 
+    std::vector<fs::path> files;
+    for (const auto& entry : fs::directory_iterator(dir)) {
+        if (fs::is_regular_file(entry.path()))
+            files.push_back(entry.path());
+    }
+
     std::vector<int> total_counts(phrases.size(), 0);
     std::map<std::string, std::map<std::string,int>> per_hour_counts;
     std::map<std::string, std::vector<std::string>> all_matches;
 
-    for (const auto& entry : fs::directory_iterator(dir)) {
-        if (!fs::is_regular_file(entry.path())) continue;
+    omp_set_num_threads(NUM_THREADS);
 
-        std::string filepath = entry.path().string();
-        std::vector<int> counts;
 
-        if (!analyze_file(filepath.c_str(), phrases, counts)) {
-            std::cerr << "Cannot open " << filepath << "\n";
-            continue;
+    #pragma omp parallel
+    {
+        std::vector<int> local_counts(phrases.size(), 0);
+        std::map<std::string, std::map<std::string,int>> local_per_hour;
+        std::map<std::string, std::vector<std::string>> local_matches;
+
+        #pragma omp for schedule(dynamic)
+        for (int i = 0; i < (int)files.size(); ++i) {
+            std::string filepath = files[i].string();
+
+            std::vector<int> counts;
+            if (!analyze_file(filepath.c_str(), phrases, counts)) {
+                #pragma omp critical
+                std::cerr << "Cannot open " << filepath << "\n";
+                continue;
+            }
+
+            for (size_t j = 0; j < phrases.size(); ++j)
+                local_counts[j] += counts[j];
+
+            analyze_events_per_hour(filepath.c_str(), phrases, local_per_hour);
+            collect_matching_lines(filepath.c_str(), phrases, local_matches);
         }
 
-        for (size_t i = 0; i < phrases.size(); ++i) total_counts[i] += counts[i];
+        #pragma omp critical
+        {
+            for (size_t j = 0; j < phrases.size(); ++j)
+                total_counts[j] += local_counts[j];
 
-        if (!analyze_events_per_hour(filepath.c_str(), phrases, per_hour_counts)) {
-            std::cerr << "Cannot open " << filepath << "\n";
-            continue;
-        }
+            for (const auto& ph_pair : local_per_hour) {
+                for (const auto& hour_pair : ph_pair.second)
+                    per_hour_counts[ph_pair.first][hour_pair.first] += hour_pair.second;
+            }
 
-        std::map<std::string, std::vector<std::string>> file_matches;
-        if (!collect_matching_lines(filepath.c_str(), phrases, file_matches)) {
-            std::cerr << "Cannot open " << filepath << " for matching lines\n";
-        } else {
-            for (const auto& kv : file_matches) {
+            for (const auto& kv : local_matches) {
                 auto& vec = all_matches[kv.first];
                 vec.insert(vec.end(), kv.second.begin(), kv.second.end());
             }
         }
     }
 
+    fs::create_directories("output");
     fs::path outpath = "output/matches.txt";
     std::ofstream outfs(outpath);
     if (!outfs) {
