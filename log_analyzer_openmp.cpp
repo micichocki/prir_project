@@ -130,10 +130,8 @@ int main(int argc, char** argv) {
 
     omp_set_num_threads(NUM_THREADS);
 
-
-    #pragma omp parallel
+    #pragma omp parallel reduction(+: total_counts[:phrases.size()])
     {
-        std::vector<int> local_counts(phrases.size(), 0);
         std::map<std::string, std::map<std::string,int>> local_per_hour;
         std::map<std::string, std::vector<std::string>> local_matches;
 
@@ -149,7 +147,7 @@ int main(int argc, char** argv) {
             }
 
             for (size_t j = 0; j < phrases.size(); ++j)
-                local_counts[j] += counts[j];
+                total_counts[j] += counts[j];
 
             analyze_events_per_hour(filepath.c_str(), phrases, local_per_hour);
             collect_matching_lines(filepath.c_str(), phrases, local_matches);
@@ -157,9 +155,6 @@ int main(int argc, char** argv) {
 
         #pragma omp critical
         {
-            for (size_t j = 0; j < phrases.size(); ++j)
-                total_counts[j] += local_counts[j];
-
             for (const auto& ph_pair : local_per_hour) {
                 for (const auto& hour_pair : ph_pair.second)
                     per_hour_counts[ph_pair.first][hour_pair.first] += hour_pair.second;
