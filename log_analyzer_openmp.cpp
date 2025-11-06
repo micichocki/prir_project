@@ -42,7 +42,7 @@ bool analyze_events_per_hour(
     return true;
 }
 
-bool collect_matching_lines(const char* filename, const std::vector<std::string>& phrases, std::map<std::string, std::vector<std::string>>& results) {
+bool collect_matching_lines(const char* filename, const std::vector<std::string>& phrases,std::map<std::string, std::vector<std::string>>& results) {
     std::ifstream in(filename);
     if (!in) return false;
 
@@ -52,22 +52,6 @@ bool collect_matching_lines(const char* filename, const std::vector<std::string>
             if (line.find(ph) != std::string::npos) {
                 results[ph].push_back(line);
             }
-        }
-    }
-    return true;
-}
-
-bool analyze_file(const char* filename, const std::vector<std::string>& phrases, std::vector<int>& counts) {
-    std::ifstream in(filename);
-    if (!in) return false;
-
-    std::string line;
-    counts.assign(phrases.size(), 0);
-
-    while (std::getline(in, line)) {
-        for (size_t i = 0; i < phrases.size(); ++i) {
-            if (line.find(phrases[i]) != std::string::npos)
-                ++counts[i];
         }
     }
     return true;
@@ -124,13 +108,14 @@ int main(int argc, char** argv) {
             files.push_back(entry.path());
     }
 
-    std::vector<int> total_counts(phrases.size(), 0);
-    std::map<std::string, std::map<std::string,int>> per_hour_counts;
+    size_t phrases_count = phrases.size();
+    int* total_counts = new int[phrases_count]();
+    std::map<std::string, std::map<std::string, int>> per_hour_counts;
     std::map<std::string, std::vector<std::string>> all_matches;
 
     omp_set_num_threads(NUM_THREADS);
 
-    #pragma omp parallel reduction(+: total_counts[:phrases.size()])
+    #pragma omp parallel reduction(+: total_counts[:phrases_count])
     {
         std::map<std::string, std::map<std::string,int>> local_per_hour;
         std::map<std::string, std::vector<std::string>> local_matches;
@@ -139,15 +124,20 @@ int main(int argc, char** argv) {
         for (int i = 0; i < (int)files.size(); ++i) {
             std::string filepath = files[i].string();
 
-            std::vector<int> counts;
-            if (!analyze_file(filepath.c_str(), phrases, counts)) {
+            std::ifstream in(filepath);
+            if (!in) {
                 #pragma omp critical
                 std::cerr << "Cannot open " << filepath << "\n";
                 continue;
             }
 
-            for (size_t j = 0; j < phrases.size(); ++j)
-                total_counts[j] += counts[j];
+            std::string line;
+            while (std::getline(in, line)) {
+                for (size_t j = 0; j < phrases_count; ++j) {
+                    if (line.find(phrases[j]) != std::string::npos)
+                        total_counts[j]++;
+                }
+            }
 
             analyze_events_per_hour(filepath.c_str(), phrases, local_per_hour);
             collect_matching_lines(filepath.c_str(), phrases, local_matches);
@@ -155,15 +145,15 @@ int main(int argc, char** argv) {
 
         #pragma omp critical
         {
-            for (const auto& ph_pair : local_per_hour) {
+            for (const auto& ph_pair : local_per_hour)
                 for (const auto& hour_pair : ph_pair.second)
                     per_hour_counts[ph_pair.first][hour_pair.first] += hour_pair.second;
-            }
 
-            for (const auto& kv : local_matches) {
-                auto& vec = all_matches[kv.first];
-                vec.insert(vec.end(), kv.second.begin(), kv.second.end());
-            }
+            for (const auto& kv : local_matches)
+                all_matches[kv.first].insert(
+                    all_matches[kv.first].end(),
+                    kv.second.begin(),
+                    kv.second.end());
         }
     }
 
@@ -177,14 +167,15 @@ int main(int argc, char** argv) {
             outfs << "=== " << ph << " ===\n";
             auto it = all_matches.find(ph);
             if (it != all_matches.end()) {
-                for (const auto& l : it->second) outfs << l << "\n";
+                for (const auto& l : it->second)
+                    outfs << l << "\n";
             }
             outfs << "\n";
         }
     }
 
     std::cout << "Total counts:\n";
-    for (size_t i = 0; i < phrases.size(); ++i) {
+    for (size_t i = 0; i < phrases_count; ++i) {
         std::cout << phrases[i] << ": " << total_counts[i] << '\n';
     }
 
