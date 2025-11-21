@@ -106,7 +106,7 @@ int main(int argc, char** argv) {
 
         std::cout << "Hybrid Analyzer started.\n";
         std::cout << "MPI Processes: " << world_size << "\n";
-        std::cout << "OpenMP Max Threads per Process: " << omp_get_max_threads() << "\n";
+        std::cout << "OpenMP max threads per process: " << omp_get_max_threads() << "\n";
         std::cout << "Files found: " << all_files.size() << "\n";
     }
 
@@ -167,7 +167,7 @@ int main(int argc, char** argv) {
         std::map<std::string, std::map<std::string, int>> thread_per_hour;
         std::map<std::string, std::vector<std::string>> thread_matches;
 
-        // Dynamic scheduling allows threads to pick up new files as they finish
+        // dynamic scheduling allows threads to pick up new files as they finish
         #pragma omp for schedule(dynamic)
         for (int i = 0; i < (int)my_files.size(); ++i) {
             // Analyze the file using thread-local variables
@@ -287,7 +287,7 @@ int main(int argc, char** argv) {
             std::cout << "\n";
         }
 
-        // Performance Report
+        // measuring performance
         double elapsed = end_time - start_time;
         unsigned long long total_bytes = 0;
         for (const auto& f : all_files) {
@@ -296,7 +296,7 @@ int main(int argc, char** argv) {
         }
         double gb = total_bytes / (1024.0 * 1024.0 * 1024.0);
 
-        std::cout << "\n=== PERFORMANCE ===\n";
+
         std::cout << "Time: " << elapsed << " s\n";
         std::cout << "Total Size: " << gb << " GB\n";
         std::cout << "Throughput: " << (elapsed > 0 ? gb / elapsed : 0.0) << " GB/s\n";
