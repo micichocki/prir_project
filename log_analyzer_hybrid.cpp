@@ -14,8 +14,10 @@
 #include "Serializer.h"
 
 // running:
-// mpic++ -fopenmp -std=c++17 -O2 -o log_analyzer_hybrid log_analyzer_hybrid.cpp
-// mpirun -np 2 -x OMP_NUM_THREADS=4 ./log_analyzer_hybrid logs_folder "ERROR" "INFO"
+// nvcc -c cuda_analyzer.cu -o cuda_analyzer.o
+// mpic++ -fopenmp -std=c++17 -O2 -o log_analyzer_hybrid log_analyzer_hybrid.cpp Serializer.cpp cuda_analyzer.o -L/usr/local/cuda/lib64 -lcudart
+// export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/cuda/lib64
+// mpirun -np 2 -x OMP_NUM_THREADS=4 ./log_analyzer_hybrid log_dir "ERROR" "INFO" "WARNING"
 
 namespace fs = std::filesystem;
 
@@ -29,6 +31,10 @@ enum MsgTag {
     TAG_MATCHES_DATA = 5
 };
 
+extern "C" bool run_cuda_analysis(const char* file_content, size_t file_size,
+                                  const std::vector<std::string>& phrases,
+                                  std::vector<int>& results);
+
 bool analyze_file(const std::string& filepath, const std::vector<std::string>& phrases, 
                   std::vector<int>& counts, 
                   std::map<std::string, std::map<std::string, int>>& per_hour,
@@ -38,22 +44,19 @@ bool analyze_file(const std::string& filepath, const std::vector<std::string>& p
     if (!in) return false;
 
     std::string line;
-    std::regex ts_re(R"((\d{4}-\d{2}-\d{2} \d{2}):\d{2}:\d{2})");
+    static const std::regex ts_re(R"((\d{4}-\d{2}-\d{2} \d{2}):\d{2}:\d{2})");
     std::smatch m;
 
-    counts.assign(phrases.size(), 0);
 
     while (std::getline(in, line)) {
-        // hour once per line
         std::string hour = "unknown";
         if (std::regex_search(line, m, ts_re) && m.size() > 1) {
             hour = m[1].str();
         }
 
-        // phrases check
         for (size_t i = 0; i < phrases.size(); ++i) {
             if (line.find(phrases[i]) != std::string::npos) {
-                counts[i]++;
+                counts[i]++; // Tylko inkrementacja
                 per_hour[phrases[i]][hour]++;
                 matches[phrases[i]].push_back(line);
             }
@@ -82,33 +85,88 @@ int main(int argc, char** argv) {
 
     // master (rank 0) setup
     if (world_rank == 0) {
-        if (argc < 2) {
-            std::cerr << "Usage: " << argv[0] << " <dir> [phrase1 phrase2 ...]\n";
-            MPI_Abort(MPI_COMM_WORLD, 1);
-        }
+            // --- 1. CZĘŚĆ PRZYWRÓCONA: Wczytywanie argumentów i plików ---
+            if (argc < 2) {
+                std::cerr << "Usage: " << argv[0] << " <dir> [phrase1 phrase2 ...]\n";
+                MPI_Abort(MPI_COMM_WORLD, 1);
+            }
 
-        fs::path dir = argv[1];
-        if (!fs::exists(dir) || !fs::is_directory(dir)) {
-            std::cerr << "Not a directory: " << argv[1] << "\n";
-            MPI_Abort(MPI_COMM_WORLD, 1);
-        }
+            fs::path dir = argv[1];
+            if (!fs::exists(dir) || !fs::is_directory(dir)) {
+                std::cerr << "Not a directory: " << argv[1] << "\n";
+                MPI_Abort(MPI_COMM_WORLD, 1);
+            }
 
-        if (argc >= 3) {
-            for (int i = 2; i < argc; ++i) phrases.emplace_back(argv[i]);
-        } else {
-            phrases = DEFAULT_PHRASES;
-        }
+            // Wczytanie fraz z argumentów
+            if (argc >= 3) {
+                for (int i = 2; i < argc; ++i) phrases.emplace_back(argv[i]);
+            } else {
+                phrases = DEFAULT_PHRASES;
+            }
 
-        for (const auto& entry : fs::directory_iterator(dir)) {
-            if (fs::is_regular_file(entry.path()))
-                all_files.push_back(entry.path().string());
-        }
+            // Wczytanie listy plików
+            for (const auto& entry : fs::directory_iterator(dir)) {
+                if (fs::is_regular_file(entry.path()))
+                    all_files.push_back(entry.path().string());
+            }
 
-        std::cout << "Hybrid Analyzer started.\n";
-        std::cout << "MPI Processes: " << world_size << "\n";
-        std::cout << "OpenMP max threads per process: " << omp_get_max_threads() << "\n";
-        std::cout << "Files found: " << all_files.size() << "\n";
-    }
+            std::cout << "Hybrid Analyzer started.\n";
+            std::cout << "MPI Processes: " << world_size << "\n";
+            std::cout << "OpenMP max threads per process: " << omp_get_max_threads() << "\n";
+            std::cout << "Files found: " << all_files.size() << "\n";
+
+            // --- 2. CZĘŚĆ CUDA: Benchmark dla jednego pliku ---
+            std::cout << "\n--- CUDA vs CPU Performance Benchmark ---\n";
+            if (!all_files.empty()) {
+                std::string test_file = all_files[0];
+
+                std::ifstream f(test_file, std::ios::binary | std::ios::ate);
+                if (f) {
+                    size_t size = f.tellg();
+                    f.seekg(0, std::ios::beg);
+                    std::vector<char> buffer(size);
+                    if (f.read(buffer.data(), size)) {
+
+                        // CUDA
+                        std::vector<int> gpu_results;
+                        double t1 = MPI_Wtime();
+                        run_cuda_analysis(buffer.data(), size, phrases, gpu_results);
+                        double t2 = MPI_Wtime();
+                        double cuda_time = t2 - t1;
+
+                        // CPU (proste porównanie)
+                        std::vector<int> cpu_results(phrases.size(), 0);
+                        t1 = MPI_Wtime();
+                        std::string content_str(buffer.data(), size);
+                        for(size_t i=0; i<phrases.size(); ++i) {
+                            size_t pos = content_str.find(phrases[i], 0);
+                            while(pos != std::string::npos) {
+                                cpu_results[i]++;
+                                pos = content_str.find(phrases[i], pos + 1);
+                            }
+                        }
+                        t2 = MPI_Wtime();
+                        double cpu_time = t2 - t1;
+
+                        // Wyniki benchmarku
+                        std::cout << "File: " << test_file << " (" << size / (1024.0*1024.0) << " MB)\n";
+                        std::cout << "CUDA Time: " << cuda_time << " s\n";
+                        std::cout << "CPU Time:  " << cpu_time << " s\n";
+                        if(cuda_time > 0) {
+                            std::cout << "Speedup:   " << cpu_time / cuda_time << "x\n";
+                            double gb_processed = size / (1024.0 * 1024.0 * 1024.0);
+                            std::cout << "CUDA Throughput: " << gb_processed / cuda_time << " GB/s\n";
+                        }
+
+                        // Weryfikacja
+                        if(!phrases.empty()) {
+                             std::cout << "Verification (Count of '" << phrases[0] << "'): GPU="
+                                       << gpu_results[0] << ", CPU=" << cpu_results[0] << "\n";
+                        }
+                    }
+                }
+            }
+        }
 
     // broadcast configuration
     // broadcast phrases
