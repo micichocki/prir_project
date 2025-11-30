@@ -10,7 +10,6 @@ public:
     static std::vector<char> serialize_string_list(const std::vector<std::string>& list);
     static std::vector<std::string> deserialize_string_list(const std::vector<char>& buffer);
 
-    // from MPI version
     static std::vector<char> serialize_counts(const std::vector<int>& counts);
     static std::vector<int> deserialize_counts(const std::vector<char>& buffer, size_t count);
 

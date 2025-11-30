@@ -1,8 +1,8 @@
 #include "Serializer.h"
-#include <cstring>  // std::memcpy
-#include <sstream>  // std::ostringstream
+#include <cstring>
+#include <sstream>
 #include <iostream>
-
+#include <algorithm>
 
 std::vector<char> Serializer::serialize_string_list(const std::vector<std::string>& list) {
     std::ostringstream oss;
@@ -17,12 +17,12 @@ std::vector<char> Serializer::serialize_string_list(const std::vector<std::strin
 std::vector<std::string> Serializer::deserialize_string_list(const std::vector<char>& buffer) {
     std::vector<std::string> result;
     if (buffer.empty()) return result;
-    
+
     std::string str(buffer.begin(), buffer.end());
     std::istringstream iss(str);
     size_t count;
     if (!(iss >> count)) return {};
-    iss.ignore(); 
+    iss.ignore();
 
     for (size_t i = 0; i < count; ++i) {
         size_t len;
@@ -35,7 +35,6 @@ std::vector<std::string> Serializer::deserialize_string_list(const std::vector<c
     return result;
 }
 
-// original from MPI version
 std::vector<char> Serializer::serialize_counts(const std::vector<int>& counts) {
     std::vector<char> buffer(counts.size() * sizeof(int));
     std::memcpy(buffer.data(), counts.data(), buffer.size());
