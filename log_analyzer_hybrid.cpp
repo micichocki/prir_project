@@ -36,7 +36,8 @@ enum MsgTag {
 
 extern "C" bool run_cuda_analysis(const char* file_content, size_t file_size,
                                   const std::vector<std::string>& phrases,
-                                  std::vector<int>& results);
+                                  std::vector<int>& results,
+                                  int blockSize);
 
 
 void analyze_content_for_time_and_matches(const std::string& content_str,
@@ -71,6 +72,7 @@ void run_openmp_analysis(const std::vector<std::string>& my_files,
                          std::map<std::string, std::map<std::string, int>>& local_per_hour,
                          std::map<std::string, std::vector<std::string>>& local_matches,
                          bool use_gpu_for_counting,
+                         int cuda_block_size,
                          int world_rank)
 {
     #pragma omp parallel
@@ -79,7 +81,7 @@ void run_openmp_analysis(const std::vector<std::string>& my_files,
         std::map<std::string, std::map<std::string, int>> thread_per_hour;
         std::map<std::string, std::vector<std::string>> thread_matches;
 
-        #pragma omp for schedule(dynamic)
+        #pragma omp for schedule(runtime)
         for (int i = 0; i < (int)my_files.size(); ++i) {
             std::string current_file = my_files[i];
 
@@ -100,7 +102,7 @@ void run_openmp_analysis(const std::vector<std::string>& my_files,
 
             if (use_gpu_for_counting) {
                 // A. TRYB GPU: Zliczanie na GPU
-                if (!run_cuda_analysis(buffer.data(), size, phrases, current_file_counts)) {
+                if (!run_cuda_analysis(buffer.data(), size, phrases, current_file_counts, cuda_block_size)) {
                     #pragma omp critical
                     std::cerr << "[Rank " << world_rank << "] CUDA failure for " << current_file << "\n";
                     continue;
@@ -161,6 +163,7 @@ int main(int argc, char** argv) {
     std::vector<std::string> all_files;
     double start_time, end_time;
     bool use_gpu_flag = false; // Nowa flaga
+    int cuda_block_size = 256;
 
     // master (rank 0) setup
     if (world_rank == 0) {
@@ -174,6 +177,8 @@ int main(int argc, char** argv) {
         for (int i = 1; i < argc; ++i) {
             if (std::string(argv[i]) == "--gpu") {
                 use_gpu_flag = true;
+            } else if (std::string(argv[i]) == "--block-size" && i + 1 < argc) {
+                cuda_block_size = std::stoi(argv[++i]);
             } else if (i != 1) { // Argumenty od 2 w górę (po katalogu) są frazami, chyba że to flaga
                 phrases.emplace_back(argv[i]);
             }
@@ -206,6 +211,7 @@ int main(int argc, char** argv) {
     // broadcast configuration
     // broadcast GPU flag
     MPI_Bcast(&use_gpu_flag, 1, MPI_CXX_BOOL, 0, MPI_COMM_WORLD);
+    MPI_Bcast(&cuda_block_size, 1, MPI_INT, 0, MPI_COMM_WORLD);
 
     // broadcast phrases
     int phrase_count = (world_rank == 0) ? phrases.size() : 0;
@@ -252,7 +258,7 @@ int main(int argc, char** argv) {
     // Uruchomienie analizy OpenMP/GPU
     run_openmp_analysis(my_files, phrases,
                         local_total_counts, local_per_hour, local_matches,
-                        use_gpu_flag, world_rank);
+                        use_gpu_flag, cuda_block_size, world_rank);
 
     // reduction
     std::vector<int> global_counts(phrases.size(), 0);

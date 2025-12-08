@@ -40,7 +40,8 @@ __global__ void count_keywords_kernel(const char* data, int data_size,
 // Funkcja Helper (Wrapper), którą wywołasz z kodu C++
 extern "C" bool run_cuda_analysis(const char* file_content, size_t file_size,
                                   const std::vector<std::string>& phrases,
-                                  std::vector<int>& results)
+                                  std::vector<int>& results,
+                                  int blockSize)
 {
     // 1. Przygotowanie słów kluczowych do formatu przyjaznego dla C (flat array)
     std::string flat_phrases;
@@ -80,7 +81,7 @@ extern "C" bool run_cuda_analysis(const char* file_content, size_t file_size,
     cudaMemcpy(d_lengths, lengths.data(), lengths.size() * sizeof(int), cudaMemcpyHostToDevice);
 
     // 4. Konfiguracja siatki wątków
-    int blockSize = 256;
+    // Use the passed blockSize
     int numBlocks = (file_size + blockSize - 1) / blockSize;
 
     // 5. Uruchomienie Kernela
