@@ -10,9 +10,11 @@ from collections import Counter
 
 # --- Configuration ---
 PROJECT_DIR = "."
+# CMake build commands
 BUILD_CMD = [
-    "nvcc -c cuda_analyzer.cu -o cuda_analyzer.o",
-    "mpic++ -fopenmp -std=c++17 -O2 -o log_analyzer_hybrid log_analyzer_hybrid.cpp Serializer.cpp cuda_analyzer.o -L/usr/local/cuda/lib64 -lcudart"
+    "mkdir build",  # Might fail if exists, that's fine
+    "cd build && cmake ..",
+    "cd build && cmake --build . --config Release"
 ]
 
 DATA_DIR_BASE = "bench_data"
@@ -21,21 +23,18 @@ DEFAULT_PHRASES = ["ERROR", "WARNING", "INFO", "DEBUG", "CRITICAL"]
 
 # --- Helper Functions ---
 
-def compile_project():
-    print("--- Compiling Project ---")
-    for cmd in BUILD_CMD:
-        print(f"Executing: {cmd}")
-        ret = subprocess.run(cmd, shell=True, cwd=PROJECT_DIR)
-        if ret.returncode != 0:
-            print(f"Error compiling with command: {cmd}")
-            return False
-    return True
+# --- Helper Functions ---
 
 def generate_data(target_size_mb, dir_name):
-    print(f"--- Generating {target_size_mb} MB of data in {dir_name} ---")
+    print(f"--- Checking data in {dir_name} ---")
+    if os.path.exists(dir_name) and os.listdir(dir_name):
+        print(f"Data directory {dir_name} already exists and is not empty. Skipping generation.")
+        return
+    
     if os.path.exists(dir_name):
         shutil.rmtree(dir_name)
     os.makedirs(dir_name)
+    print(f"--- Generating {target_size_mb} MB of data in {dir_name} ---")
 
     target_bytes = target_size_mb * 1024 * 1024
     current_bytes = 0
@@ -67,6 +66,71 @@ def generate_data(target_size_mb, dir_name):
         current_bytes += chunk_size
         file_idx += 1
 
+def compile_project():
+    print("--- Compiling Project Manually (Bypassing CMake) ---")
+    
+    # 1. Compile CUDA kernel
+    print("[1/2] Compiling CUDA kernel...")
+    
+    # Try standard compile first
+    # Use explicit cl.exe path to avoid PATH issues
+    cl_path = r"C:\Program Files (x86)\Microsoft Visual Studio\2019\BuildTools\VC\Tools\MSVC\14.29.30133\bin\Hostx64\x64\cl.exe"
+    
+    cmd_cuda = f'nvcc -ccbin "{cl_path}" -Xcompiler "/MD" -c cuda_analyzer.cu -o cuda_analyzer.obj'
+    print(f"Executing: {cmd_cuda}")
+    ret = subprocess.run(cmd_cuda, shell=True, cwd=PROJECT_DIR)
+    
+    if ret.returncode != 0:
+        print("Standard CUDA compilation failed. Retrying with conservative logic...")
+        # Retry with no optimizations and explicit CCBIN
+        cmd_cuda_safe = f'nvcc -ccbin "{cl_path}" -Xcompiler "/MD" -O0 -arch=sm_86 -c cuda_analyzer.cu -o cuda_analyzer.obj'
+        print(f"Executing: {cmd_cuda_safe}")
+        ret = subprocess.run(cmd_cuda_safe, shell=True, cwd=PROJECT_DIR)
+        
+        if ret.returncode != 0:
+            print("Error compiling CUDA kernel even with explicit compiler path.")
+            return False
+        
+    # 2. Compile and Link Host Code (MSVC)
+    print("[2/2] Compiling Host Code and Linking...")
+    
+    # Try to find MPI paths
+    mpi_inc = r"C:\Program Files (x86)\Microsoft SDKs\MPI\Include"
+    mpi_lib = r"C:\Program Files (x86)\Microsoft SDKs\MPI\Lib\x64"
+    
+    if not os.path.exists(mpi_inc):
+        # Fallback check
+        mpi_inc = r"C:\Program Files\Microsoft MPI\Bin\..\Include"
+    
+    # Link with CUDA (Required)
+    cuda_lib_dir = r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.1\lib\x64"
+    
+    # Explicitly add MSVC and Windows SDK x64 lib paths to handle the environment mess
+    # These paths are derived from the error logs and standard locations
+    msvc_lib = r"C:\Program Files (x86)\Microsoft Visual Studio\2019\BuildTools\VC\Tools\MSVC\14.29.30133\lib\x64"
+    sdk_um_lib = r"C:\Program Files (x86)\Windows Kits\10\lib\10.0.19041.0\um\x64"
+    sdk_ucrt_lib = r"C:\Program Files (x86)\Windows Kits\10\lib\10.0.19041.0\ucrt\x64"
+    
+    # Use the same explicit CL path for host compilation to ensure x64 target
+    cmd_host = (
+        f'"{cl_path}" /EHsc /std:c++17 /openmp /DUSE_CUDA /MD '
+        f'/I"{mpi_inc}" '
+        f'log_analyzer_hybrid.cpp Serializer.cpp cuda_analyzer.obj '
+        f'/link /LIBPATH:"{mpi_lib}" /LIBPATH:"{cuda_lib_dir}" '
+        f'/LIBPATH:"{msvc_lib}" /LIBPATH:"{sdk_um_lib}" /LIBPATH:"{sdk_ucrt_lib}" '
+        f'msmpi.lib cudart.lib kernel32.lib user32.lib uuid.lib '
+        f'/out:log_analyzer_hybrid.exe'
+    )
+    
+    print(f"Executing: {cmd_host}")
+    ret = subprocess.run(cmd_host, shell=True, cwd=PROJECT_DIR)
+    if ret.returncode != 0:
+        print("Error linking project (Host).")
+        return False
+
+    print("Compilation successful.")
+    return True
+
 def parse_output(output_str):
     time_match = re.search(r"Time:\s+([\d\.]+)\s+s", output_str)
     throughput_match = re.search(r"Throughput:\s+([\d\.]+)\s+GB/s", output_str)
@@ -80,10 +144,26 @@ def run_benchmark(executable="./log_analyzer_hybrid", data_dir="bench_data",
                   use_gpu=False, block_size=256,
                   phrases=DEFAULT_PHRASES):
     
+    # Detect MPI runner
+    mpi_runner = shutil.which("mpirun") or shutil.which("mpiexec")
+    if not mpi_runner:
+        print("Error: 'mpirun' or 'mpiexec' not found in PATH. Please install MPI (e.g., MS-MPI on Windows) and ensure it's in your PATH.")
+        return None, None
+
+    # Handle Executable Path on Windows
+    if os.name == 'nt':
+        if not executable.endswith('.exe'):
+            executable += '.exe'
+        if not os.path.exists(executable):
+             print(f"Warning: {executable} not found.")
+            
+    # Normalize path - USE ABSOLUTE PATH for MPI safety on Windows
+    executable = os.path.abspath(executable)
+
     cmd = [
-        "mpirun", "-np", str(np),
-        "-x", f"OMP_NUM_THREADS={omp_threads}",
-        "-x", f"OMP_SCHEDULE={omp_schedule}",
+        mpi_runner, "-np", str(np),
+        "-env", "OMP_NUM_THREADS", str(omp_threads),
+        "-env", "OMP_SCHEDULE", str(omp_schedule),
         executable, data_dir
     ]
     if use_gpu:
@@ -96,10 +176,26 @@ def run_benchmark(executable="./log_analyzer_hybrid", data_dir="bench_data",
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, cwd=PROJECT_DIR)
         if result.returncode != 0:
-            print("Error running command:")
+            print(f"Error running command (Return Code: {result.returncode}):")
+            print("--- STDOUT ---")
+            print(result.stdout)
+            print("--- STDERR ---")
             print(result.stderr)
+            print("----------------")
             return None, None
-        return parse_output(result.stdout)
+
+        t, throu = parse_output(result.stdout)
+        if t is None or throu is None:
+             print(f"WARNING: Parse failed for command: {' '.join(cmd)}")
+             print("--- STDOUT ---")
+             print(result.stdout)
+             print("--- STDERR ---")
+             print(result.stderr)
+             print("----------------")
+        return t, throu
+    except FileNotFoundError:
+             print(f"Error: The executable '{executable}' (or the MPI runner) was not found.")
+             return None, None
     except Exception as e:
         print(f"Exception running benchmark: {e}")
         return None, None
@@ -190,7 +286,7 @@ def scenario_cpu_vs_gpu_data_scaling():
         results_throughput["CPU"].append(throu_cpu if throu_cpu else 0)
         results_throughput["GPU"].append(throu_gpu if throu_gpu else 0)
         
-        shutil.rmtree(dir_name)
+        # shutil.rmtree(dir_name)  <-- Disabled per user request
         
     plot_metric(sizes_mb, results_throughput, "Data Size (MB)", "Throughput (GB/s)", "CPU vs GPU Throughput Scaling", "cpu_gpu_scaling_throughput.png")
 
@@ -203,20 +299,21 @@ def analyze_top_n_words(dir_name, n=10):
     for fpath in files:
         with open(fpath, "r") as f:
             for line in f:
-                # Basic tokenization
-                words = re.findall(r'\b\w+\b', line.lower())
+                # Basic tokenization - ignore purely numeric tokens (timestamps/ids)
+                words = re.findall(r'\b[a-zA-Z_]+\b', line.lower())
                 cnt.update(words)
     
     top_n = cnt.most_common(n)
     print(f"Top {n} words: {top_n}")
     
-    words, counts = zip(*top_n)
-    plt.figure(figsize=(10, 6))
-    plt.bar(words, counts)
-    plt.title(f"Top {n} Most Frequent Words")
-    plt.ylabel("Frequency")
-    plt.savefig(os.path.join(RESULTS_DIR, "top_n_words.png"))
-    plt.close()
+    if top_n:
+        words, counts = zip(*top_n)
+        plt.figure(figsize=(10, 6))
+        plt.bar(words, counts)
+        plt.title(f"Top {n} Most Frequent Words")
+        plt.ylabel("Frequency")
+        plt.savefig(os.path.join(RESULTS_DIR, "top_n_words.png"))
+        plt.close()
 
 def main():
     parser = argparse.ArgumentParser()
@@ -236,8 +333,9 @@ def main():
         dir_name = "test_data"
         generate_data(10, dir_name)
         print("Running CPU Test...")
-        run_benchmark(data_dir=dir_name, np=2, omp_threads=2, use_gpu=False)
-        shutil.rmtree(dir_name)
+        t, throu = run_benchmark(data_dir=dir_name, np=2, omp_threads=2, use_gpu=False)
+        print(f"Test Result -> Time: {t} s, Throughput: {throu} GB/s")
+        # shutil.rmtree(dir_name)
 
     if args.all:
         bench_data_dir = os.path.join(PROJECT_DIR, "bench_data_main")
@@ -248,7 +346,7 @@ def main():
         scenario_block_size(bench_data_dir)
         analyze_top_n_words(bench_data_dir)
         
-        shutil.rmtree(bench_data_dir)
+        # shutil.rmtree(bench_data_dir)
         
         scenario_cpu_vs_gpu_data_scaling()
         

@@ -34,12 +34,43 @@ enum MsgTag {
     TAG_MATCHES_DATA = 5
 };
 
-extern "C" bool run_cuda_analysis(const char* file_content, size_t file_size,
-                                  const std::vector<std::string>& phrases,
-                                  std::vector<int>& results,
-                                  int blockSize);
+// Raw CUDA declaration
+#ifdef USE_CUDA
+extern "C" bool run_cuda_analysis_raw(const char* file_content, size_t file_size,
+                                      const char* flat_phrases, int flat_phrases_size,
+                                      const int* offsets,
+                                      const int* lengths,
+                                      int num_keywords,
+                                      int* out_results,
+                                      int blockSize);
 
+// Helper wrapper to match old signature but call raw API
+bool run_cuda_analysis(const char* file_content, size_t file_size,
+                       const std::vector<std::string>& phrases,
+                       std::vector<int>& results,
+                       int blockSize)
+{
+    // Flatten phrases on Host (C++)
+    std::string flat_phrases;
+    std::vector<int> offsets;
+    std::vector<int> lengths;
 
+    for (const auto& p : phrases) {
+        offsets.push_back(flat_phrases.size());
+        lengths.push_back(p.size());
+        flat_phrases += p;
+    }
+
+    results.resize(phrases.size());
+
+    return run_cuda_analysis_raw(file_content, file_size,
+                                 flat_phrases.data(), flat_phrases.size(),
+                                 offsets.data(), lengths.data(),
+                                 phrases.size(),
+                                 results.data(),
+                                 blockSize);
+}
+#endif
 void analyze_content_for_time_and_matches(const std::string& content_str,
                                           const std::vector<std::string>& phrases,
                                           std::map<std::string, std::map<std::string, int>>& per_hour,
@@ -210,7 +241,7 @@ int main(int argc, char** argv) {
 
     // broadcast configuration
     // broadcast GPU flag
-    MPI_Bcast(&use_gpu_flag, 1, MPI_CXX_BOOL, 0, MPI_COMM_WORLD);
+    MPI_Bcast(&use_gpu_flag, 1, MPI_C_BOOL, 0, MPI_COMM_WORLD);
     MPI_Bcast(&cuda_block_size, 1, MPI_INT, 0, MPI_COMM_WORLD);
 
     // broadcast phrases
