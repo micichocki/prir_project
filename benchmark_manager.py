@@ -10,9 +10,9 @@ from collections import Counter
 
 # --- Configuration ---
 PROJECT_DIR = "."
-# CMake build commands
+# CMake build commands (Not used in manual compile mode but kept for ref)
 BUILD_CMD = [
-    "mkdir build",  # Might fail if exists, that's fine
+    "mkdir build",
     "cd build && cmake ..",
     "cd build && cmake --build . --config Release"
 ]
@@ -20,8 +20,6 @@ BUILD_CMD = [
 DATA_DIR_BASE = "bench_data"
 RESULTS_DIR = "plots"
 DEFAULT_PHRASES = ["ERROR", "WARNING", "INFO", "DEBUG", "CRITICAL"]
-
-# --- Helper Functions ---
 
 # --- Helper Functions ---
 
@@ -34,37 +32,53 @@ def generate_data(target_size_mb, dir_name):
     if os.path.exists(dir_name):
         shutil.rmtree(dir_name)
     os.makedirs(dir_name)
-    print(f"--- Generating {target_size_mb} MB of data in {dir_name} ---")
+    print(f"--- Generating ~{target_size_mb} MB of data in {dir_name} ---")
 
-    target_bytes = target_size_mb * 1024 * 1024
-    current_bytes = 0
-    file_idx = 0
+    source_log = "docker_full.log"
+    use_real_data = os.path.exists(source_log)
     
-    while current_bytes < target_bytes:
-        chunk_size = min(10 * 1024 * 1024, target_bytes - current_bytes)
-        filename = os.path.join(dir_name, f"log_{file_idx}.log")
+    if use_real_data:
+        src_size = os.path.getsize(source_log)
+        # Calculate copies needed.
+        num_copies = int((target_size_mb * 1024 * 1024) / src_size)
+        if num_copies < 1: num_copies = 1
         
-        with open(filename, "w") as f:
-            lines = []
-            bytes_written = 0
-            while bytes_written < chunk_size:
-                now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                level = random.choice(DEFAULT_PHRASES + ["TRACE", "VERBOSE"])
-                # Add some random words to make Top-N interesting
-                words = ["connection", "timeout", "database", "query", "failed", "success", "user", "login", "api", "latency"]
-                extra = " ".join(random.choices(words, k=3))
-                msg = f"{now} [{level}] {extra} id={random.randint(0,1000)}\n"
-                lines.append(msg)
-                bytes_written += len(msg)
-                
-                if len(lines) > 1000:
+        print(f"Using '{source_log}' (Size: {src_size/1024/1024:.2f} MB). Creating {num_copies} copies.")
+        
+        for i in range(num_copies):
+            dst = os.path.join(dir_name, f"log_{i}.log")
+            shutil.copy(source_log, dst)
+            
+    else:
+        print(f"'{source_log}' not found. Falling back to synthetic generation.")
+        target_bytes = target_size_mb * 1024 * 1024
+        current_bytes = 0
+        file_idx = 0
+        
+        while current_bytes < target_bytes:
+            chunk_size = min(10 * 1024 * 1024, target_bytes - current_bytes)
+            filename = os.path.join(dir_name, f"log_{file_idx}.log")
+            
+            with open(filename, "w") as f:
+                lines = []
+                bytes_written = 0
+                while bytes_written < chunk_size:
+                    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    level = random.choice(DEFAULT_PHRASES + ["TRACE", "VERBOSE"])
+                    words = ["connection", "timeout", "database", "query", "failed", "success", "user", "login", "api", "latency"]
+                    extra = " ".join(random.choices(words, k=3))
+                    msg = f"{now} [{level}] {extra} id={random.randint(0,1000)}\n"
+                    lines.append(msg)
+                    bytes_written += len(msg)
+                    
+                    if len(lines) > 1000:
+                        f.writelines(lines)
+                        lines = []
+                if lines:
                     f.writelines(lines)
-                    lines = []
-            if lines:
-                f.writelines(lines)
-        
-        current_bytes += chunk_size
-        file_idx += 1
+            
+            current_bytes += chunk_size
+            file_idx += 1
 
 def compile_project():
     print("--- Compiling Project Manually (Bypassing CMake) ---")
@@ -105,16 +119,20 @@ def compile_project():
     # Link with CUDA (Required)
     cuda_lib_dir = r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.1\lib\x64"
     
-    # Explicitly add MSVC and Windows SDK x64 lib paths to handle the environment mess
-    # These paths are derived from the error logs and standard locations
+    # Explicitly add MSVC and Windows SDK x64 lib paths
     msvc_lib = r"C:\Program Files (x86)\Microsoft Visual Studio\2019\BuildTools\VC\Tools\MSVC\14.29.30133\lib\x64"
     sdk_um_lib = r"C:\Program Files (x86)\Windows Kits\10\lib\10.0.19041.0\um\x64"
     sdk_ucrt_lib = r"C:\Program Files (x86)\Windows Kits\10\lib\10.0.19041.0\ucrt\x64"
     
-    # Use the same explicit CL path for host compilation to ensure x64 target
+    # REQUIRED INCLUDE PATHS (Fixes 'iostream' not found)
+    msvc_inc = r"C:\Program Files (x86)\Microsoft Visual Studio\2019\BuildTools\VC\Tools\MSVC\14.29.30133\include"
+    sdk_ucrt_inc = r"C:\Program Files (x86)\Windows Kits\10\Include\10.0.19041.0\ucrt"
+    sdk_um_inc = r"C:\Program Files (x86)\Windows Kits\10\Include\10.0.19041.0\um"
+    sdk_shared_inc = r"C:\Program Files (x86)\Windows Kits\10\Include\10.0.19041.0\shared"
+    
     cmd_host = (
         f'"{cl_path}" /EHsc /std:c++17 /openmp /DUSE_CUDA /MD '
-        f'/I"{mpi_inc}" '
+        f'/I"{mpi_inc}" /I"{msvc_inc}" /I"{sdk_ucrt_inc}" /I"{sdk_um_inc}" /I"{sdk_shared_inc}" '
         f'log_analyzer_hybrid.cpp Serializer.cpp cuda_analyzer.obj '
         f'/link /LIBPATH:"{mpi_lib}" /LIBPATH:"{cuda_lib_dir}" '
         f'/LIBPATH:"{msvc_lib}" /LIBPATH:"{sdk_um_lib}" /LIBPATH:"{sdk_ucrt_lib}" '
@@ -142,7 +160,8 @@ def parse_output(output_str):
 def run_benchmark(executable="./log_analyzer_hybrid", data_dir="bench_data", 
                   np=1, omp_threads=1, omp_schedule="dynamic", 
                   use_gpu=False, block_size=256,
-                  phrases=DEFAULT_PHRASES):
+                  phrases=DEFAULT_PHRASES,
+                  extra_args=None):
     
     # Detect MPI runner
     mpi_runner = shutil.which("mpirun") or shutil.which("mpiexec")
@@ -169,6 +188,9 @@ def run_benchmark(executable="./log_analyzer_hybrid", data_dir="bench_data",
     if use_gpu:
         cmd.append("--gpu")
         cmd.extend(["--block-size", str(block_size)])
+    
+    if extra_args:
+        cmd.extend(extra_args)
     
     cmd.extend(phrases)
     
@@ -224,7 +246,8 @@ def scenario_threads_scaling(base_data_dir):
     results_time = {m: [] for m in modes}
     results_throughput = {m: [] for m in modes}
     
-    t_seq, _ = run_benchmark(data_dir=base_data_dir, np=1, omp_threads=1, use_gpu=False)
+    print("Running baseline CPU (np=1, th=4)...")
+    t_seq, _ = run_benchmark(data_dir=base_data_dir, np=1, omp_threads=4, use_gpu=False)
     
     for mode in modes:
         for th in threads:
@@ -272,23 +295,44 @@ def scenario_block_size(base_data_dir):
     plt.close()
 
 def scenario_cpu_vs_gpu_data_scaling():
-    print("\n--- Scenario: CPU vs GPU Data Scaling ---")
-    sizes_mb = [100, 500] 
+    print("\n--- Scenario: CPU vs GPU Data Scaling (Granular 10-100 files) ---")
+    
+    
+    # 100 files * 14.8MB = ~1480MB
+    base_target_mb = 1500 
+    dir_name = os.path.join(PROJECT_DIR, "bench_data_scaling")
+    generate_data(base_target_mb, dir_name)
+    
+    # 2. Loop from 10 to 100 files
+    file_counts = list(range(10, 101, 10)) # 10, 20, ..., 100
     results_throughput = {"CPU": [], "GPU": []}
     
-    for size in sizes_mb:
-        dir_name = os.path.join(PROJECT_DIR, f"bench_data_{size}MB")
-        generate_data(size, dir_name)
+    for count in file_counts:
+        print(f"Benchmarking with {count} files...")
         
-        _, throu_cpu = run_benchmark(data_dir=dir_name, np=2, omp_threads=4, use_gpu=False)
-        _, throu_gpu = run_benchmark(data_dir=dir_name, np=2, omp_threads=4, use_gpu=True, block_size=256)
+        # CPU Run
+        _, throu_cpu = run_benchmark(
+            data_dir=dir_name, 
+            np=2, 
+            omp_threads=4, 
+            use_gpu=False,
+            extra_args=["--limit-files", str(count)]
+        )
+        
+        # GPU Run
+        _, throu_gpu = run_benchmark(
+            data_dir=dir_name, 
+            np=2, 
+            omp_threads=4, 
+            use_gpu=True, 
+            block_size=256,
+            extra_args=["--limit-files", str(count)]
+        )
         
         results_throughput["CPU"].append(throu_cpu if throu_cpu else 0)
         results_throughput["GPU"].append(throu_gpu if throu_gpu else 0)
         
-        # shutil.rmtree(dir_name)  <-- Disabled per user request
-        
-    plot_metric(sizes_mb, results_throughput, "Data Size (MB)", "Throughput (GB/s)", "CPU vs GPU Throughput Scaling", "cpu_gpu_scaling_throughput.png")
+    plot_metric(file_counts, results_throughput, "Number of Files (approx 15MB each)", "Throughput (GB/s)", "CPU vs GPU Throughput Scaling", "cpu_gpu_scaling_throughput.png")
 
 def analyze_top_n_words(dir_name, n=10):
     print(f"\n--- Analyzing Top-{n} Words ---")
@@ -312,6 +356,8 @@ def analyze_top_n_words(dir_name, n=10):
         plt.bar(words, counts)
         plt.title(f"Top {n} Most Frequent Words")
         plt.ylabel("Frequency")
+        plt.xticks(rotation=45, ha='right')
+        plt.tight_layout()
         plt.savefig(os.path.join(RESULTS_DIR, "top_n_words.png"))
         plt.close()
 
@@ -339,7 +385,8 @@ def main():
 
     if args.all:
         bench_data_dir = os.path.join(PROJECT_DIR, "bench_data_main")
-        generate_data(500, bench_data_dir) 
+        # Main benchmark now uses 1500MB (1.5GB) as requested
+        generate_data(1500, bench_data_dir) 
 
         scenario_threads_scaling(bench_data_dir)
         scenario_process_scaling(bench_data_dir)

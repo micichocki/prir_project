@@ -205,11 +205,15 @@ int main(int argc, char** argv) {
         }
 
         // Sprawdzenie flagi GPU i zebranie fraz
+        int file_limit = 0; // 0 means no limit
+
         for (int i = 1; i < argc; ++i) {
             if (std::string(argv[i]) == "--gpu") {
                 use_gpu_flag = true;
             } else if (std::string(argv[i]) == "--block-size" && i + 1 < argc) {
                 cuda_block_size = std::stoi(argv[++i]);
+            } else if (std::string(argv[i]) == "--limit-files" && i + 1 < argc) {
+                file_limit = std::stoi(argv[++i]);
             } else if (i != 1) { // Argumenty od 2 w górę (po katalogu) są frazami, chyba że to flaga
                 phrases.emplace_back(argv[i]);
             }
@@ -228,6 +232,14 @@ int main(int argc, char** argv) {
         for (const auto& entry : fs::directory_iterator(dir)) {
             if (fs::is_regular_file(entry.path()))
                 all_files.push_back(entry.path().string());
+        }
+        
+        // SORTING IS CRITICAL for consistent benchmarking when limiting files
+        std::sort(all_files.begin(), all_files.end());
+
+        // Apply limit if requested
+        if (file_limit > 0 && (size_t)file_limit < all_files.size()) {
+            all_files.resize(file_limit);
         }
 
         std::cout << "Hybrid Analyzer started.\n";
