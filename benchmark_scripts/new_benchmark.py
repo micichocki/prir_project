@@ -8,12 +8,12 @@ import pandas as pd
 
 # --- KONFIGURACJA ---
 SOURCE_LOG = "docker_full.log"
-DATA_DIR = "bench_data_final"
-RESULTS_DIR = "../plots"
+DATA_DIR = "../bench_data_final"
+RESULTS_DIR = "../plots"  # Zmieniłem na lokalny folder plots, dostosuj jeśli trzeba "../plots"
 SEQ_EXE = "./log_analyzer_seq"
 HYBRID_EXE = "./log_analyzer_hybrid"
 
-# Domyślne ustawienia (stałe, chyba że benchmark je zmienia)
+# Domyślne ustawienia
 DEFAULT_MPI_PROCS = 2
 DEFAULT_OMP_THREADS = 4
 DEFAULT_BLOCK_SIZE = 256
@@ -133,6 +133,11 @@ def main():
 
     prepare_data()
 
+    # Obliczamy rozmiar danych raz, przyda się do tabeli
+    sample_file = os.path.join(DATA_DIR, "log_copy_0.log")
+    single_file_size_mb = os.path.getsize(sample_file) / (1024*1024)
+    total_data_size_gb = (10 * single_file_size_mb) / 1024.0
+
     print("\n=== 1. Calculating Baseline (Sequential) ===")
     t_seq, _ = run_benchmark('seq', DATA_DIR)
     if t_seq is None:
@@ -141,10 +146,9 @@ def main():
     print(f"Baseline Sequential Time (T_seq): {t_seq:.4f} s")
 
     # ---------------------------------------------------------
-    # SCENARIUSZ 1: Skalowalność OpenMP (Speedup & Efficiency)
+    # SCENARIUSZ 1: Skalowalność OpenMP
     # ---------------------------------------------------------
     print("\n=== 2. OpenMP Scaling (Speedup & Efficiency) ===")
-    # Stałe: MPI=2, GPU=True (testujemy hybrydę), Data=Full
     threads_list = [1, 2, 4, 8, 16]
     omp_times = []
 
@@ -152,9 +156,6 @@ def main():
         t, _ = run_benchmark('hybrid', DATA_DIR, np=DEFAULT_MPI_PROCS, threads=th, gpu=True)
         omp_times.append(t if t else float('inf'))
 
-    # Obliczenia
-    # S = T_seq / T_par
-    # E = S / threads
     omp_speedup = [t_seq / t for t in omp_times]
     omp_efficiency = [s / th for s, th in zip(omp_speedup, threads_list)]
 
@@ -167,10 +168,9 @@ def main():
               "omp_efficiency.png")
 
     # ---------------------------------------------------------
-    # SCENARIUSZ 2: Skalowalność MPI (Time, Speedup, Efficiency)
+    # SCENARIUSZ 2: Skalowalność MPI
     # ---------------------------------------------------------
     print("\n=== 3. MPI Scaling (Time, Speedup, Efficiency) ===")
-    # Stałe: Threads=4, GPU=True, Data=Full
     procs_list = [1, 2, 4, 8]
     mpi_times = []
 
@@ -181,7 +181,6 @@ def main():
     mpi_speedup = [t_seq / t for t in mpi_times]
     mpi_efficiency = [s / np for s, np in zip(mpi_speedup, procs_list)]
 
-    # Brakujący wykres czasu dla MPI
     save_plot(procs_list, [mpi_times], ["Execution Time"],
               "Number of Processes", "Time (s)", "MPI Execution Time vs Processes",
               "mpi_time.png")
@@ -195,10 +194,9 @@ def main():
               "mpi_efficiency.png")
 
     # ---------------------------------------------------------
-    # SCENARIUSZ 3: CUDA Throughput vs Block Size
+    # SCENARIUSZ 3: CUDA Optimization
     # ---------------------------------------------------------
     print("\n=== 4. CUDA Optimization (Throughput) ===")
-    # Stałe: MPI=2, Threads=4
     block_sizes = [128, 256, 512]
     cuda_throughputs = []
 
@@ -211,24 +209,19 @@ def main():
              "cuda_throughput_block.png")
 
     # ---------------------------------------------------------
-    # SCENARIUSZ 4: CPU vs GPU Time Scaling (vs Data Size)
+    # SCENARIUSZ 4: CPU vs GPU Time Scaling
     # ---------------------------------------------------------
     print("\n=== 5. CPU vs GPU Time Scaling ===")
-    # Zmienne dane: limit-files [2, 4, 6, 8, 10]
     file_limits = [2, 4, 6, 8, 10]
-    # Rozmiar pojedynczego pliku (dla osi X w MB)
-    single_file_size_mb = os.path.getsize(os.path.join(DATA_DIR, "log_copy_0.log")) / (1024*1024)
     data_sizes_mb = [n * single_file_size_mb for n in file_limits]
 
     cpu_times = []
     gpu_times = []
 
     for limit in file_limits:
-        # CPU Run (MPI=2, Threads=4, GPU=False)
         t_cpu, _ = run_benchmark('hybrid', DATA_DIR, np=DEFAULT_MPI_PROCS, threads=DEFAULT_OMP_THREADS, gpu=False, limit_files=limit)
         cpu_times.append(t_cpu if t_cpu else 0)
 
-        # GPU Run (MPI=2, Threads=4, GPU=True)
         t_gpu, _ = run_benchmark('hybrid', DATA_DIR, np=DEFAULT_MPI_PROCS, threads=DEFAULT_OMP_THREADS, gpu=True, limit_files=limit)
         gpu_times.append(t_gpu if t_gpu else 0)
 
@@ -237,34 +230,58 @@ def main():
               "cpu_gpu_time_scaling.png")
 
     # ---------------------------------------------------------
-    # TABELA PORÓWNAWCZA
+    # TABELA PORÓWNAWCZA (ROZSZERZONA)
     # ---------------------------------------------------------
-    print("\n=== 6. Generating Comparative Table ===")
+    print("\n=== 6. Generating EXTENDED Comparative Table ===")
 
-    # Zbieranie najlepszych wyników
-    best_omp_time = min(omp_times)
-    best_mpi_time = min(mpi_times)
-    best_gpu_time = min(gpu_times) # Przy pełnych danych (ostatni element) jest w mpi_times (bo tam GPU=True)
+    # Definicja scenariuszy do tabeli
+    scenarios = [
+        {"name": "Sequential (CPU)",       "type": "seq",    "np": 1, "th": 1, "gpu": False},
+        {"name": "Pure MPI (CPU)",         "type": "hybrid", "np": 4, "th": 1, "gpu": False},
+        {"name": "Pure OpenMP (CPU)",      "type": "hybrid", "np": 1, "th": 4, "gpu": False},
+        {"name": "Hybrid CPU (Balanced)",  "type": "hybrid", "np": 2, "th": 4, "gpu": False},
+        {"name": "Hybrid GPU (Single Node)","type": "hybrid", "np": 1, "th": 4, "gpu": True},
+        {"name": "Hybrid GPU (Balanced)",  "type": "hybrid", "np": 2, "th": 4, "gpu": True},
+        {"name": "Hybrid GPU (Max MPI)",   "type": "hybrid", "np": 4, "th": 1, "gpu": True},
+    ]
 
-    # Dla porównania weźmy wynik z pełnego datasetu dla CPU i GPU
-    full_cpu_t, full_cpu_th = run_benchmark('hybrid', DATA_DIR, np=2, threads=4, gpu=False)
-    full_gpu_t, full_gpu_th = run_benchmark('hybrid', DATA_DIR, np=2, threads=4, gpu=True)
-
-    data = {
-        "Configuration": ["Sequential (CPU)", "Hybrid CPU (Best)", "Hybrid GPU (Best)"],
-        "Details": ["1 Process, 1 Thread", "2 Process, 4 Threads", "2 Process, 4 Threads + CUDA"],
-        "Time (s)": [t_seq, full_cpu_t, full_gpu_t],
-        "Speedup": [1.0, t_seq/full_cpu_t, t_seq/full_gpu_t],
-        "Throughput (GB/s)": [
-            (10*single_file_size_mb/1024)/t_seq,
-            full_cpu_th,
-            full_gpu_th
-        ]
+    table_data = {
+        "Configuration": [],
+        "Details": [],
+        "Time (s)": [],
+        "Speedup": [],
+        "Throughput (GB/s)": []
     }
 
-    df = pd.DataFrame(data)
+    for s in scenarios:
+        print(f"Benchmarking Table Case: {s['name']}...")
 
-    fig, ax = plt.subplots(figsize=(10, 3))
+        if s['type'] == 'seq':
+            # Używamy wcześniej policzonego baseline
+            t = t_seq
+            th = total_data_size_gb / t if t > 0 else 0
+        else:
+            t, th = run_benchmark('hybrid', DATA_DIR, np=s['np'], threads=s['th'], gpu=s['gpu'])
+
+        # Zabezpieczenie przed None
+        if t is None: t = 0
+        if th is None: th = 0
+
+        speedup = t_seq / t if t > 0 else 0.0
+
+        details = f"{s['np']} Proc, {s['th']} Threads"
+        if s['gpu']: details += " + CUDA"
+
+        table_data["Configuration"].append(s['name'])
+        table_data["Details"].append(details)
+        table_data["Time (s)"].append(f"{t:.4f}")
+        table_data["Speedup"].append(f"{speedup:.2f}x")
+        table_data["Throughput (GB/s)"].append(f"{th:.3f}")
+
+    df = pd.DataFrame(table_data)
+
+    # Rysowanie tabeli
+    fig, ax = plt.subplots(figsize=(12, 4)) # Nieco szersza tabela
     ax.xaxis.set_visible(False)
     ax.yaxis.set_visible(False)
     ax.set_frame_on(False)
@@ -272,14 +289,15 @@ def main():
     table = ax.table(cellText=df.values, colLabels=df.columns, loc='center', cellLoc='center')
     table.auto_set_font_size(False)
     table.set_fontsize(10)
-    table.scale(1.2, 1.5)
+    table.scale(1.2, 1.8) # Wyskalowanie dla czytelności
 
-    plt.title("Performance Comparison Summary")
-    plt.savefig(os.path.join(RESULTS_DIR, "comparison_table.png"))
+    plt.title("Extended Performance Comparison Summary")
+    plt.savefig(os.path.join(RESULTS_DIR, "comparison_table.png"), bbox_inches='tight')
     plt.close()
 
+    print("\n--- Final Table Data ---")
     print(df)
-    print(f"\nAll missing charts generated in '{RESULTS_DIR}'.")
+    print(f"\nAll charts generated in '{RESULTS_DIR}'.")
 
 if __name__ == "__main__":
     main()
