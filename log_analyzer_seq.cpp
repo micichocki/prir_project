@@ -15,7 +15,7 @@ namespace fs = std::filesystem;
 
 const std::vector<std::string> DEFAULT_PHRASES = {"ERROR", "WARNING", "INFO"};
 
-// DEKLARACJA CUDA
+// Delaracja CUDA
 #ifdef USE_CUDA
 extern "C" bool run_cuda_analysis_raw(const char* file_content, size_t file_size,
                                       const char* flat_phrases, int flat_phrases_size,
@@ -51,7 +51,7 @@ bool run_cuda_analysis(const char* file_content, size_t file_size,
 }
 #endif
 
-// FUNKCJA ANALIZUJĄCA (Czas i linie)
+// Funckja analizująca zawartość pliku pod kątem znaczników czasu i dopasowań
 void analyze_content_for_time_and_matches(const std::string& content_str,
                                           const std::vector<std::string>& phrases,
                                           std::map<std::string, std::map<std::string, int>>& per_hour,
@@ -76,7 +76,7 @@ void analyze_content_for_time_and_matches(const std::string& content_str,
     }
 }
 
-// GŁÓWNA PĘTLA PRZETWARZANIA (SEKWENCYJNA)
+// Główna funkcja analizy sekwencyjnej
 void run_sequential_analysis(const std::vector<std::string>& files,
                              const std::vector<std::string>& phrases,
                              std::vector<int>& total_counts,

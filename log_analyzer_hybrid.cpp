@@ -212,7 +212,7 @@ int main(int argc, char** argv) {
                 cuda_block_size = std::stoi(argv[++i]);
             } else if (std::string(argv[i]) == "--limit-files" && i + 1 < argc) {
                 file_limit = std::stoi(argv[++i]);
-            } else if (i != 1) { // Argumenty od 2 w górę (po katalogu) są frazami, chyba że to flaga
+            } else if (i != 1) {
                 phrases.emplace_back(argv[i]);
             }
         }
