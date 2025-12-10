@@ -34,7 +34,7 @@ enum MsgTag {
     TAG_MATCHES_DATA = 5
 };
 
-// Raw CUDA declaration
+// deklaracja CUDA
 #ifdef USE_CUDA
 extern "C" bool run_cuda_analysis_raw(const char* file_content, size_t file_size,
                                       const char* flat_phrases, int flat_phrases_size,
@@ -44,13 +44,11 @@ extern "C" bool run_cuda_analysis_raw(const char* file_content, size_t file_size
                                       int* out_results,
                                       int blockSize);
 
-// Helper wrapper to match old signature but call raw API
 bool run_cuda_analysis(const char* file_content, size_t file_size,
                        const std::vector<std::string>& phrases,
                        std::vector<int>& results,
                        int blockSize)
 {
-    // Flatten phrases on Host (C++)
     std::string flat_phrases;
     std::vector<int> offsets;
     std::vector<int> lengths;
@@ -88,7 +86,7 @@ void analyze_content_for_time_and_matches(const std::string& content_str,
         }
         for (size_t i = 0; i < phrases.size(); ++i) {
             if (line.find(phrases[i]) != std::string::npos) {
-                // Ta część wykonuje tylko analizę godzinową i filtrowanie
+                // Zliczanie per hour i zapisywanie linii do matches
                 per_hour[phrases[i]][hour]++;
                 matches[phrases[i]].push_back(line);
             }
@@ -96,7 +94,7 @@ void analyze_content_for_time_and_matches(const std::string& content_str,
     }
 }
 
-// Nowa funkcja główna do przetwarzania OpenMP
+// Funkcja główna do przetwarzania OpenMP
 void run_openmp_analysis(const std::vector<std::string>& my_files,
                          const std::vector<std::string>& phrases,
                          std::vector<int>& local_total_counts,
@@ -116,7 +114,7 @@ void run_openmp_analysis(const std::vector<std::string>& my_files,
         for (int i = 0; i < (int)my_files.size(); ++i) {
             std::string current_file = my_files[i];
 
-            // 1. Wczytanie pliku do bufora (konieczne dla CUDA i dla pomiaru I/O)
+            // Wczytanie pliku do bufora (konieczne dla CUDA i dla pomiaru I/O)
             std::ifstream f(current_file, std::ios::binary | std::ios::ate);
             if (!f) {
                 #pragma omp critical
@@ -149,22 +147,22 @@ void run_openmp_analysis(const std::vector<std::string>& my_files,
                 }
             }
 
-            // 2. Analiza statystyk godzinowych i filtrowania (Zawsze na CPU)
+            // Analiza statystyk godzinowych i filtrowania (Zawsze na CPU)
             analyze_content_for_time_and_matches(content_str, phrases, thread_per_hour, thread_matches);
 
-            // 3. Dodanie wyników zliczania (z GPU lub CPU) do akumulatora wątkowego
+            // Dodanie wyników zliczania (z GPU lub CPU) do akumulatora wątkowego
             for (size_t j = 0; j < phrases.size(); ++j) {
                 thread_counts[j] += current_file_counts[j];
             }
         }
 
-        // REDUKCJA WĄTKOWA DO LOKALNYCH AKUMULATORÓW PROCESU
+        // Redukcja wyników wątkowych do lokalnych akumulatorów procesu
         #pragma omp critical
         {
             for (size_t i = 0; i < phrases.size(); ++i) {
                 local_total_counts[i] += thread_counts[i];
             }
-            // merging maps
+            // Mergowanie map per_hour
             for (const auto& [ph, hour_map] : thread_per_hour) {
                 for (const auto& [h, c] : hour_map) {
                     local_per_hour[ph][h] += c;
@@ -193,19 +191,19 @@ int main(int argc, char** argv) {
     std::vector<std::string> phrases;
     std::vector<std::string> all_files;
     double start_time, end_time;
-    bool use_gpu_flag = false; // Nowa flaga
+    bool use_gpu_flag = false;
     int cuda_block_size = 256;
 
-    // master (rank 0) setup
+    // Master (rank 0) setup
     if (world_rank == 0) {
-        // --- 1. Wczytywanie argumentów i plików ---
+        // Wczytywanie argumentów i plików
         if (argc < 2) {
             std::cerr << "Usage: " << argv[0] << " <dir> [--gpu] [phrase1 phrase2 ...]\n";
             MPI_Abort(MPI_COMM_WORLD, 1);
         }
 
         // Sprawdzenie flagi GPU i zebranie fraz
-        int file_limit = 0; // 0 means no limit
+        int file_limit = 0;
 
         for (int i = 1; i < argc; ++i) {
             if (std::string(argv[i]) == "--gpu") {
@@ -234,10 +232,10 @@ int main(int argc, char** argv) {
                 all_files.push_back(entry.path().string());
         }
         
-        // SORTING IS CRITICAL for consistent benchmarking when limiting files
+        // Sortowanie plików dla spójności
         std::sort(all_files.begin(), all_files.end());
 
-        // Apply limit if requested
+		// Zastosowanie limitu plików, jeśli podano
         if (file_limit > 0 && (size_t)file_limit < all_files.size()) {
             all_files.resize(file_limit);
         }
@@ -247,16 +245,13 @@ int main(int argc, char** argv) {
         std::cout << "MPI Processes: " << world_size << "\n";
         std::cout << "OpenMP max threads per process: " << omp_get_max_threads() << "\n";
         std::cout << "Files found: " << all_files.size() << "\n";
-
-        // --- USUNIĘTO BENCHMARK CUDA/CPU ---
     }
 
-    // broadcast configuration
-    // broadcast GPU flag
+    // Broadcast zmiennych konfiguracyjnych
     MPI_Bcast(&use_gpu_flag, 1, MPI_C_BOOL, 0, MPI_COMM_WORLD);
     MPI_Bcast(&cuda_block_size, 1, MPI_INT, 0, MPI_COMM_WORLD);
 
-    // broadcast phrases
+    // Broadcast fraz
     int phrase_count = (world_rank == 0) ? phrases.size() : 0;
     MPI_Bcast(&phrase_count, 1, MPI_INT, 0, MPI_COMM_WORLD);
     if (world_rank != 0) phrases.resize(phrase_count);
@@ -267,7 +262,7 @@ int main(int argc, char** argv) {
         MPI_Bcast(phrases[i].data(), len, MPI_CHAR, 0, MPI_COMM_WORLD);
     }
 
-    // broadcast file list
+    // Broadcast listy plików
     std::vector<char> file_list_buf;
     int file_list_size = 0;
     if (world_rank == 0) {
@@ -281,11 +276,11 @@ int main(int argc, char** argv) {
         all_files = Serializer::deserialize_string_list(file_list_buf);
     }
 
-    // synchronization and starting the timer
+    // Synchronizacja i rozpoczęcie pomiaru czasu
     MPI_Barrier(MPI_COMM_WORLD);
     start_time = MPI_Wtime();
 
-    // static load balancing
+    // Podział plików między procesy MPI
     std::vector<std::string> my_files;
     for (size_t i = 0; i < all_files.size(); ++i) {
         if (i % world_size == (size_t)world_rank) {
@@ -293,7 +288,7 @@ int main(int argc, char** argv) {
         }
     }
 
-    // local accumulators
+    // Lokalne akumulatory wyników
     std::vector<int> local_total_counts(phrases.size(), 0);
     std::map<std::string, std::map<std::string, int>> local_per_hour;
     std::map<std::string, std::vector<std::string>> local_matches;
@@ -303,15 +298,15 @@ int main(int argc, char** argv) {
                         local_total_counts, local_per_hour, local_matches,
                         use_gpu_flag, cuda_block_size, world_rank);
 
-    // reduction
+    // Redukcja wyników zliczania do mastera
     std::vector<int> global_counts(phrases.size(), 0);
     MPI_Reduce(local_total_counts.data(), global_counts.data(), phrases.size(), MPI_INT, MPI_SUM, 0, MPI_COMM_WORLD);
 
-    // gathering maps/vectors to master
+    // Redukcja wyników per-hour i matches do mastera
     std::map<std::string, std::map<std::string, int>> global_per_hour;
     std::map<std::string, std::vector<std::string>> global_matches;
 
-    // Kod redukcji map (bez zmian)
+    // Kod redukcji map
     if (world_rank == 0) {
         global_per_hour = local_per_hour;
         global_matches = local_matches;
@@ -352,7 +347,7 @@ int main(int argc, char** argv) {
     end_time = MPI_Wtime();
 
     if (world_rank == 0) {
-        // ... (writing to file i stats) ...
+        // Zapis wyników do plików
         fs::create_directories("output");
         std::ofstream out("output/matches.txt");
         for (const auto& ph : phrases) {
@@ -381,7 +376,7 @@ int main(int argc, char** argv) {
             std::cout << "\n";
         }
 
-        // measuring performance
+        // Raport wydajności
         double elapsed = end_time - start_time;
         unsigned long long total_bytes = 0;
         for (const auto& f : all_files) {
