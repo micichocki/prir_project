@@ -1,5 +1,25 @@
+# IDEs
 .idea
 .vscode
-\build
-output
-log_dir
+.vs
+
+# Build Output
+build/
+output/
+*.obj
+*.o
+*.exe
+*.pdb
+*.ilk
+*.lib
+log_analyzer_hybrid
+
+# Python
+__pycache__/
+*.pyc
+
+# Benchmark Data & Results
+bench_data*/
+test_data/
+plots/
+log_dir/
