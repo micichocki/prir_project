@@ -18,7 +18,7 @@ BUILD_CMD = [
 ]
 
 DATA_DIR_BASE = "bench_data"
-RESULTS_DIR = "plots"
+RESULTS_DIR = "plots_bak"
 DEFAULT_PHRASES = ["ERROR", "WARNING", "INFO", "DEBUG", "CRITICAL"]
 
 # --- Helper Functions ---

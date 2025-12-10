@@ -16,7 +16,7 @@
 
 // Uruchomienie
 //  nvcc -c cuda_analyzer.cu -o cuda_analyzer.o
-// mpic++ -fopenmp -std=c++17 -O2     -o log_analyzer_hybrid     log_analyzer_hybrid.cpp Serializer.cpp cuda_analyzer.o     -L/usr/local/cuda/lib64 -lcudart
+// mpic++ -fopenmp -std=c++17 -O2 -DUSE_CUDA -o log_analyzer_hybrid log_analyzer_hybrid.cpp Serializer.cpp cuda_analyzer.o -L/usr/local/cuda/lib64 -lcudart
 // export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/cuda/lib64
 // Zliczanie na CPU: mpirun -np 2 -x OMP_NUM_THREADS=4 ./log_analyzer_hybrid log_dir "ERROR" "WARNING"
 // Zliczanie na GPU: mpirun -np 2 -x OMP_NUM_THREADS=4 ./log_analyzer_hybrid log_dir --gpu "ERROR" "WARNING"
