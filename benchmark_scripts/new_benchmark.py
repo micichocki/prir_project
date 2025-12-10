@@ -9,7 +9,7 @@ import pandas as pd
 # --- KONFIGURACJA ---
 SOURCE_LOG = "docker_full.log"
 DATA_DIR = "bench_data_final"
-RESULTS_DIR = "plots"
+RESULTS_DIR = "../plots"
 SEQ_EXE = "./log_analyzer_seq"
 HYBRID_EXE = "./log_analyzer_hybrid"
 

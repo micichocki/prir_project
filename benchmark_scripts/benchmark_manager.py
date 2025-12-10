@@ -9,7 +9,7 @@ import argparse
 from collections import Counter
 
 # --- Configuration ---
-PROJECT_DIR = "."
+PROJECT_DIR = ".."
 # CMake build commands (Not used in manual compile mode but kept for ref)
 BUILD_CMD = [
     "mkdir build",
